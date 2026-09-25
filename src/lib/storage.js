@@ -127,9 +127,47 @@ const sowFromDb = (r) => ({
   id: r.id, projectId: r.project_id, vertical: r.vertical, useCaseType: r.use_case_type, complexity: r.complexity,
   totalWeeks: r.total_weeks, totalHours: r.total_hours, phases: r.phases || [], assumptions: r.assumptions || [],
   narrative: r.narrative || "", createdAt: r.created_at,
+  objectives: r.objectives || [], inScope: r.in_scope || [], outOfScope: r.out_of_scope || [],
+  customerResponsibilities: r.customer_responsibilities || [], mode: r.mode || "T&M",
 });
 const sowToDb = (s) => ({
   project_id: s.projectId || null, vertical: s.vertical, use_case_type: s.useCaseType, complexity: s.complexity,
   total_weeks: s.totalWeeks, total_hours: s.totalHours, phases: s.phases || [], assumptions: s.assumptions || [], narrative: s.narrative,
+  objectives: s.objectives || [], in_scope: s.inScope || [], out_of_scope: s.outOfScope || [],
+  customer_responsibilities: s.customerResponsibilities || [], mode: s.mode || "T&M",
 });
 export const sowsTable = makeTable("sows", sowFromDb, sowToDb);
+
+/* ---------- Roles / rate card ---------- */
+const roleFromDb = (r) => ({ id: r.id, name: r.name, hourlyRate: r.hourly_rate });
+const roleToDb = (r) => ({ name: r.name, hourly_rate: r.hourlyRate || null });
+export const rolesTable = makeTable("roles", roleFromDb, roleToDb);
+
+/* ---------- Change orders ---------- */
+const coFromDb = (r) => ({
+  id: r.id, sowId: r.sow_id, projectId: r.project_id, changeOrderNumber: r.change_order_number,
+  objective: r.objective, originalSowTerms: r.original_sow_terms, changes: r.changes || [],
+  assumptions: r.assumptions || [], resourceLines: r.resource_lines || [], totalFee: r.total_fee,
+  narrative: r.narrative || "", createdAt: r.created_at,
+});
+const coToDb = (c) => ({
+  sow_id: c.sowId || null, project_id: c.projectId || null, change_order_number: c.changeOrderNumber || null,
+  objective: c.objective, original_sow_terms: c.originalSowTerms, changes: c.changes || [],
+  assumptions: c.assumptions || [], resource_lines: c.resourceLines || [], total_fee: c.totalFee, narrative: c.narrative,
+});
+export const changeOrdersTable = makeTable("change_orders", coFromDb, coToDb);
+
+/* ---------- App settings (key-value) ---------- */
+export const settingsTable = {
+  async getAll() {
+    const { data, error } = await db.from("app_settings").select("*");
+    if (error) throw error;
+    const map = {};
+    data.forEach((r) => (map[r.key] = r.value));
+    return map;
+  },
+  async set(key, value) {
+    const { error } = await db.from("app_settings").upsert({ key, value }, { onConflict: "key" });
+    if (error) throw error;
+  },
+};

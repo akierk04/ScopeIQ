@@ -1,19 +1,27 @@
 import React, { useState, useEffect } from "react";
-import { LayoutDashboard, LayoutGrid, FileText, Workflow, Loader2, LogOut } from "lucide-react";
+import { LayoutDashboard, LayoutGrid, FileText, FileEdit, Workflow, DollarSign, Loader2, LogOut, Settings as SettingsIcon } from "lucide-react";
 import { db } from "./lib/supabaseClient";
-import { projectsTable, milestonesTable, dependenciesTable, risksTable, changeRequestsTable, sowsTable } from "./lib/storage";
+import {
+  projectsTable, milestonesTable, dependenciesTable, risksTable, changeRequestsTable, sowsTable,
+  rolesTable, changeOrdersTable, settingsTable,
+} from "./lib/storage";
 import Login from "./Login";
 import Dashboard from "./components/Dashboard";
 import Portfolio from "./components/Portfolio";
 import ProjectDetail from "./components/ProjectDetail";
 import Blueprints from "./components/Blueprints";
 import SOWModule from "./components/SOWModule";
+import ChangeOrders from "./components/ChangeOrders";
+import RateCard from "./components/RateCard";
+import SettingsModal from "./components/Settings";
 
 const TABS = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "portfolio", label: "Portfolio", icon: LayoutGrid },
   { id: "blueprints", label: "Blueprints", icon: Workflow },
   { id: "sow", label: "SOW generator", icon: FileText },
+  { id: "changeorders", label: "Change Orders", icon: FileEdit },
+  { id: "ratecard", label: "Rate Card", icon: DollarSign },
 ];
 
 export default function App() {
@@ -26,7 +34,11 @@ export default function App() {
   const [risks, setRisks] = useState([]);
   const [changeRequests, setChangeRequests] = useState([]);
   const [sows, setSows] = useState([]);
+  const [roles, setRoles] = useState([]);
+  const [changeOrders, setChangeOrders] = useState([]);
+  const [settings, setSettings] = useState({});
   const [openProjectId, setOpenProjectId] = useState(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     db.auth.getSession().then(({ data }) => setSession(data.session));
@@ -35,10 +47,12 @@ export default function App() {
   }, []);
 
   const loadAll = async () => {
-    const [p, m, d, r, c, s] = await Promise.all([
-      projectsTable.list(), milestonesTable.list(), dependenciesTable.list(), risksTable.list(), changeRequestsTable.list(), sowsTable.list(),
+    const [p, m, d, r, c, s, ro, co, st] = await Promise.all([
+      projectsTable.list(), milestonesTable.list(), dependenciesTable.list(), risksTable.list(),
+      changeRequestsTable.list(), sowsTable.list(), rolesTable.list(), changeOrdersTable.list(), settingsTable.getAll(),
     ]);
-    setProjects(p); setMilestones(m); setDependencies(d); setRisks(r); setChangeRequests(c); setSows(s);
+    setProjects(p); setMilestones(m); setDependencies(d); setRisks(r); setChangeRequests(c);
+    setSows(s); setRoles(ro); setChangeOrders(co); setSettings(st);
   };
 
   useEffect(() => {
@@ -64,14 +78,15 @@ export default function App() {
       <div className="border-b border-slate-800 px-6 py-4">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
-            <h1 className="text-lg font-semibold tracking-tight">PMO Console</h1>
-            <p className="text-xs text-slate-500 font-mono">Projects are the hub — everything else hangs off them</p>
+            <h1 className="text-lg font-semibold tracking-tight">{settings.product_name || "PMO Console"}</h1>
+            <p className="text-xs text-slate-500 font-mono">{settings.vendor_name ? `${settings.vendor_name} · ` : ""}Projects are the hub — everything else hangs off them</p>
           </div>
           <div className="flex items-center gap-4 text-xs font-mono">
             <span className="text-emerald-400">{counts.Green} Green</span>
             <span className="text-amber-400">{counts.Amber} Amber</span>
             <span className="text-rose-400">{counts.Red} Red</span>
-            <button onClick={() => db.auth.signOut()} className="flex items-center gap-1.5 text-slate-500 hover:text-slate-300 border-l border-slate-800 pl-4"><LogOut size={13} /> Sign out</button>
+            <button onClick={() => setSettingsOpen(true)} className="flex items-center gap-1.5 text-slate-500 hover:text-slate-300 border-l border-slate-800 pl-4"><SettingsIcon size={13} /> Settings</button>
+            <button onClick={() => db.auth.signOut()} className="flex items-center gap-1.5 text-slate-500 hover:text-slate-300"><LogOut size={13} /> Sign out</button>
           </div>
         </div>
       </div>
@@ -101,9 +116,12 @@ export default function App() {
             />
           )}
           {tab === "blueprints" && <Blueprints onProjectCreated={(id) => { loadAll(); openProject(id); }} />}
-          {tab === "sow" && <SOWModule projects={projects} sows={sows} setSows={setSows} />}
+          {tab === "sow" && <SOWModule projects={projects} sows={sows} setSows={setSows} roles={roles} settings={settings} />}
+          {tab === "changeorders" && <ChangeOrders sows={sows} changeOrders={changeOrders} setChangeOrders={setChangeOrders} roles={roles} projects={projects} settings={settings} />}
+          {tab === "ratecard" && <RateCard roles={roles} setRoles={setRoles} />}
         </main>
       </div>
+      {settingsOpen && <SettingsModal settings={settings} setSettings={setSettings} onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }
