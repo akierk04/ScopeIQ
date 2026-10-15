@@ -3,13 +3,16 @@ import { X, Plus, Trash2, Save, ArrowLeft, CheckCircle2 } from "lucide-react";
 import { Badge, Field, Modal, AIButton, EmptyState, inputCls, LEVEL_COLOR, uid } from "./ui";
 import {
   milestonesTable, dependenciesTable, risksTable, scopeItemsTable, changeRequestsTable, closeoutsTable, projectsTable,
+  discoveryFindingsTable, integrationsTable,
 } from "../lib/storage";
+import { extractFile } from "../lib/fileExtract";
+import { scoreIntegration } from "../lib/definitionScore";
 import { callClaude } from "../lib/ai";
 import { assessProjectHealth } from "../lib/health";
 
-const SUBTABS = ["Overview", "Milestones", "Dependencies", "Risks", "Scope & changes", "Closeout"];
+const SUBTABS = ["Overview", "Discovery", "Milestones", "Dependencies", "Risks", "Scope & changes", "Closeout"];
 
-export default function ProjectDetail({ project, onBack, onUpdated, onDeleted }) {
+export default function ProjectDetail({ project, sows, onBack, onUpdated, onDeleted }) {
   const [subtab, setSubtab] = useState("Overview");
   const [milestones, setMilestones] = useState([]);
   const [dependencies, setDependencies] = useState([]);
@@ -17,20 +20,25 @@ export default function ProjectDetail({ project, onBack, onUpdated, onDeleted })
   const [scopeItems, setScopeItems] = useState([]);
   const [changeRequests, setChangeRequests] = useState([]);
   const [closeout, setCloseout] = useState(null);
+  const [findings, setFindings] = useState([]);
+  const [integrations, setIntegrations] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const [m, d, r, s, c, co] = await Promise.all([
+      const [m, d, r, s, c, co, df, ig] = await Promise.all([
         milestonesTable.list({ project_id: project.id }),
         dependenciesTable.list({ project_id: project.id }),
         risksTable.list({ project_id: project.id }),
         scopeItemsTable.list({ project_id: project.id }),
         changeRequestsTable.list({ project_id: project.id }),
         closeoutsTable.get(project.id),
+        discoveryFindingsTable.list({ project_id: project.id }),
+        integrationsTable.list({ project_id: project.id }),
       ]);
       setMilestones(m); setDependencies(d); setRisks(r); setScopeItems(s); setChangeRequests(c); setCloseout(co);
+      setFindings(df); setIntegrations(ig);
       setLoading(false);
     })();
   }, [project.id]);
@@ -72,7 +80,8 @@ export default function ProjectDetail({ project, onBack, onUpdated, onDeleted })
         ))}
       </div>
 
-      {subtab === "Overview" && <OverviewTab project={project} onUpdated={onUpdated} onDeleted={onDeleted} />}
+      {subtab === "Overview" && <OverviewTab project={project} sows={sows} onUpdated={onUpdated} onDeleted={onDeleted} />}
+      {subtab === "Discovery" && <DiscoveryTab project={project} findings={findings} setFindings={setFindings} integrations={integrations} setIntegrations={setIntegrations} />}
       {subtab === "Milestones" && <MilestonesTab projectId={project.id} milestones={milestones} setMilestones={setMilestones} />}
       {subtab === "Dependencies" && <DependenciesTab projectId={project.id} dependencies={dependencies} setDependencies={setDependencies} />}
       {subtab === "Risks" && <RisksTab project={project} risks={risks} setRisks={setRisks} />}
@@ -88,7 +97,8 @@ export default function ProjectDetail({ project, onBack, onUpdated, onDeleted })
 }
 
 /* ---------- Overview ---------- */
-function OverviewTab({ project, onUpdated, onDeleted }) {
+function OverviewTab({ project, sows, onUpdated, onDeleted }) {
+  const originSow = (sows || []).find((s) => s.id === project.sowId);
   const [form, setForm] = useState(project);
   const [saving, setSaving] = useState(false);
   const save = async () => {
@@ -104,6 +114,11 @@ function OverviewTab({ project, onUpdated, onDeleted }) {
   };
   return (
     <div className="max-w-xl">
+      {originSow && (
+        <div className="mb-4 px-3 py-2 bg-teal-500/10 border border-teal-500/30 rounded-md text-xs text-teal-300">
+          Started from SOW: {originSow.vertical} / {originSow.useCaseType} ({originSow.totalWeeks} wks estimated, {originSow.status})
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-x-4">
         <Field label="Project name"><input className={inputCls} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
         <Field label="Account"><input className={inputCls} value={form.account || ""} onChange={(e) => setForm({ ...form, account: e.target.value })} /></Field>
@@ -433,3 +448,222 @@ function CloseoutTab({ project, milestones, risks, changeRequests, closeout, set
     </div>
   );
 }
+
+/* ---------- Discovery Review (Evidence Pipeline v1) ---------- */
+const FINDING_TYPES = ["Requirement", "Decision", "Assumption", "Dependency", "TBD", "Constraint", "Open Question"];
+const STATE_COLOR = { Defined: "text-emerald-400 border-emerald-500/40", "Partially Defined": "text-amber-400 border-amber-500/40", Underdefined: "text-rose-400 border-rose-500/40" };
+
+function DiscoveryTab({ project, findings, setFindings, integrations, setIntegrations }) {
+  const [extracting, setExtracting] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [pendingFindings, setPendingFindings] = useState([]);
+  const [pendingIntegrations, setPendingIntegrations] = useState([]);
+  const [sourceName, setSourceName] = useState("");
+
+  const handleUpload = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setExtracting(true);
+    try {
+      const { text } = await extractFile(file);
+      setSourceName(file.name);
+      await analyze(text, file.name);
+    } catch (err) {
+      alert("Couldn't read that file: " + err.message);
+    } finally {
+      setExtracting(false);
+    }
+  };
+
+  const analyze = async (text, docName) => {
+    setAnalyzing(true);
+    try {
+      const result = await callClaude(
+        `You are analyzing an implementation discovery artifact for the project "${project.name}" (vertical: ${project.vertical}).
+Extract discrete findings from this document. Classify each into exactly one of these seven types: Requirement, Decision, Assumption, Dependency, TBD, Constraint, Open Question.
+Separately, identify any system-to-system Integrations described, with as much structured detail as the document actually supports — leave a field blank if the document doesn't say, never guess or invent a value.
+
+Document:
+---
+${text}
+---
+
+Return ONLY raw JSON, no markdown fences:
+{
+  "findings": [{"type": "one of the seven types above, exactly", "title": "short title", "description": "1-2 sentences", "sourceExcerpt": "the specific sentence or phrase this was drawn from, verbatim or near-verbatim"}],
+  "integrations": [{"sourceSystem":"","targetSystem":"","direction":"Inbound, Outbound, or Bidirectional","mechanism":"","owner":"","trigger":"","cadence":"","mode":"","criticalPath":false,"blocksWorkflow":false,"authentication":"","dataContract":"","errorHandling":"","sourceExcerpt":""}]
+}
+Leave any field as an empty string if the document doesn't specify it. Do not fabricate details to fill gaps — an incomplete integration record is expected and fine.`
+      );
+      setPendingFindings((result.findings || []).map((f) => ({ ...f, sourceName: docName, _key: uid() })));
+      setPendingIntegrations((result.integrations || []).map((i) => ({ ...i, sourceName: docName, _key: uid() })));
+    } catch (e) { alert("Analysis failed: " + e.message); }
+    finally { setAnalyzing(false); }
+  };
+
+  const confirmFinding = async (pf) => {
+    try {
+      const created = await discoveryFindingsTable.create({ ...pf, projectId: project.id, status: "Confirmed" });
+      setFindings([...findings, created]);
+      setPendingFindings(pendingFindings.filter((f) => f._key !== pf._key));
+    } catch (e) { alert("Save failed: " + e.message); }
+  };
+  const rejectFinding = (key) => setPendingFindings(pendingFindings.filter((f) => f._key !== key));
+  const updatePendingFinding = (key, patch) => setPendingFindings(pendingFindings.map((f) => (f._key === key ? { ...f, ...patch } : f)));
+
+  const confirmIntegration = async (pi) => {
+    try {
+      const { _key, ...clean } = pi;
+      const created = await integrationsTable.create({ ...clean, projectId: project.id, status: "Confirmed" });
+      setIntegrations([...integrations, created]);
+      setPendingIntegrations(pendingIntegrations.filter((i) => i._key !== pi._key));
+    } catch (e) { alert("Save failed: " + e.message); }
+  };
+  const rejectIntegration = (key) => setPendingIntegrations(pendingIntegrations.filter((i) => i._key !== key));
+  const updatePendingIntegration = (key, patch) => setPendingIntegrations(pendingIntegrations.map((i) => (i._key === key ? { ...i, ...patch } : i)));
+
+  const removeFinding = async (id) => { try { await discoveryFindingsTable.remove(id); setFindings(findings.filter((f) => f.id !== id)); } catch (e) { alert("Delete failed: " + e.message); } };
+  const removeIntegration = async (id) => { try { await integrationsTable.remove(id); setIntegrations(integrations.filter((i) => i.id !== id)); } catch (e) { alert("Delete failed: " + e.message); } };
+
+  const countsByType = FINDING_TYPES.map((t) => ({ type: t, count: findings.filter((f) => f.type === t).length }));
+
+  return (
+    <div>
+      <p className="text-xs text-slate-500 mb-4">
+        Upload a discovery artifact. Findings are proposed, never saved automatically — review and confirm each one. Source → Evidence → Review → Approved, never straight to approved.
+      </p>
+
+      <label className="inline-flex items-center gap-1.5 text-xs text-teal-300 hover:text-teal-200 cursor-pointer border border-teal-500/30 rounded-md px-3 py-1.5 bg-teal-500/10 mb-3">
+        {extracting || analyzing ? <Loader2Icon /> : null}
+        {extracting ? "Reading file..." : analyzing ? "Analyzing..." : "Analyze implementation artifact (PDF, DOCX, XLSX, image)"}
+        <input type="file" accept=".pdf,.docx,.xlsx,image/*" className="hidden" disabled={extracting || analyzing} onChange={handleUpload} />
+      </label>
+      <div className="flex gap-3 mb-5">
+        <button onClick={() => setPendingFindings([...pendingFindings, { type: "Requirement", title: "", description: "", sourceExcerpt: "", sourceName: "Manual entry", _key: uid() }])}
+          className="text-xs text-teal-400 hover:text-teal-300">+ Add finding manually</button>
+        <button onClick={() => setPendingIntegrations([...pendingIntegrations, {
+          sourceSystem: "", targetSystem: "", direction: "", mechanism: "", owner: "", trigger: "", cadence: "", mode: "",
+          criticalPath: false, blocksWorkflow: false, authentication: "", dataContract: "", errorHandling: "", sourceExcerpt: "", sourceName: "Manual entry", _key: uid(),
+        }])} className="text-xs text-teal-400 hover:text-teal-300">+ Add integration manually</button>
+      </div>
+
+      {(pendingFindings.length > 0 || pendingIntegrations.length > 0) && (
+        <div className="mb-6 p-4 border border-teal-500/30 bg-teal-500/5 rounded-lg">
+          <h4 className="text-sm font-semibold text-slate-100 mb-3">Review{sourceName ? ` — from "${sourceName}"` : ""}</h4>
+          {pendingFindings.length > 0 && (
+            <div className="space-y-2 mb-4">
+              {pendingFindings.map((pf) => (
+                <div key={pf._key} className="p-3 bg-slate-950 border border-slate-800 rounded-md">
+                  <div className="flex items-start justify-between gap-3 mb-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] px-1.5 rounded border text-slate-400 border-slate-600 font-mono">{pf.type}</span>
+                      <input className={inputCls + " max-w-xs"} value={pf.title} onChange={(e) => updatePendingFinding(pf._key, { title: e.target.value })} />
+                    </div>
+                    <div className="flex gap-2 shrink-0">
+                      <button onClick={() => confirmFinding(pf)} className="text-xs text-teal-400 hover:text-teal-300">Confirm</button>
+                      <button onClick={() => rejectFinding(pf._key)} className="text-xs text-rose-400 hover:text-rose-300">Reject</button>
+                    </div>
+                  </div>
+                  <textarea className={inputCls + " text-xs"} rows={2} value={pf.description} onChange={(e) => updatePendingFinding(pf._key, { description: e.target.value })} />
+                  {pf.sourceExcerpt && <p className="text-[11px] text-slate-600 italic mt-1">"{pf.sourceExcerpt}"</p>}
+                </div>
+              ))}
+            </div>
+          )}
+          {pendingIntegrations.map((pi) => {
+            const { score, state, missingEssential, missingOther } = scoreIntegration(pi);
+            return (
+              <div key={pi._key} className="p-3 bg-slate-950 border border-slate-800 rounded-md mb-2">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-slate-100 font-medium">Integration: {pi.sourceSystem || "?"} → {pi.targetSystem || "?"}</span>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-[10px] px-1.5 rounded border font-mono ${STATE_COLOR[state]}`}>{state} · {score}%</span>
+                    <button onClick={() => confirmIntegration(pi)} className="text-xs text-teal-400 hover:text-teal-300">Confirm</button>
+                    <button onClick={() => rejectIntegration(pi._key)} className="text-xs text-rose-400 hover:text-rose-300">Reject</button>
+                  </div>
+                </div>
+                <IntegrationFieldGrid integration={pi} onChange={(patch) => updatePendingIntegration(pi._key, patch)} missingEssential={missingEssential} missingOther={missingOther} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-6">
+        <div>
+          <h4 className="text-xs uppercase tracking-wide text-slate-400 font-mono mb-2">Confirmed findings</h4>
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            {countsByType.filter((c) => c.count > 0).map((c) => (
+              <span key={c.type} className="text-[10px] px-1.5 py-0.5 rounded border text-slate-400 border-slate-700 font-mono">{c.count} {c.type}</span>
+            ))}
+          </div>
+          {findings.length === 0 ? <EmptyState text="No confirmed findings yet." /> : (
+            <div className="space-y-1.5">
+              {findings.map((f) => (
+                <div key={f.id} className="p-2.5 bg-slate-900/50 border border-slate-800 rounded-md flex items-start justify-between gap-2">
+                  <div><span className="text-[10px] px-1.5 rounded border text-slate-500 border-slate-700 font-mono mr-1.5">{f.type}</span><span className="text-sm text-slate-200">{f.title}</span></div>
+                  <button onClick={() => removeFinding(f.id)} className="text-slate-600 hover:text-rose-400 shrink-0"><Trash2 size={12} /></button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div>
+          <h4 className="text-xs uppercase tracking-wide text-slate-400 font-mono mb-2">Confirmed integrations</h4>
+          {integrations.length === 0 ? <EmptyState text="No confirmed integrations yet." /> : (
+            <div className="space-y-1.5">
+              {integrations.map((ig) => {
+                const { score, state } = scoreIntegration(ig);
+                return (
+                  <div key={ig.id} className="p-2.5 bg-slate-900/50 border border-slate-800 rounded-md flex items-center justify-between gap-2">
+                    <span className="text-sm text-slate-200">{ig.sourceSystem || "?"} → {ig.targetSystem || "?"}</span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className={`text-[10px] px-1.5 rounded border font-mono ${STATE_COLOR[state]}`}>{state} · {score}%</span>
+                      <button onClick={() => removeIntegration(ig.id)} className="text-slate-600 hover:text-rose-400"><Trash2 size={12} /></button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function IntegrationFieldGrid({ integration, onChange, missingEssential, missingOther }) {
+  const fields = [
+    ["sourceSystem", "Source system", true], ["targetSystem", "Target system", true],
+    ["direction", "Direction", true], ["mechanism", "Mechanism", true], ["owner", "Owner", true],
+    ["trigger", "Trigger", false], ["cadence", "Cadence", false], ["mode", "Mode", false],
+    ["authentication", "Authentication", false], ["dataContract", "Data contract", false], ["errorHandling", "Error handling", false],
+  ];
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      {fields.map(([key, label, essential]) => {
+        const missing = missingEssential.includes(key) || missingOther.includes(key);
+        return (
+          <label key={key} className="block">
+            <span className={`block text-[10px] font-mono mb-0.5 ${missing ? (essential ? "text-rose-400" : "text-amber-400") : "text-slate-500"}`}>
+              {missing ? "✗" : "✓"} {label}{essential ? " *" : ""}
+            </span>
+            <input className={inputCls + " text-xs py-1"} value={integration[key] || ""} onChange={(e) => onChange({ [key]: e.target.value })} />
+          </label>
+        );
+      })}
+      <label className="flex items-center gap-1.5 text-xs text-slate-400 mt-4">
+        <input type="checkbox" checked={!!integration.criticalPath} onChange={(e) => onChange({ criticalPath: e.target.checked })} /> Critical path
+      </label>
+      <label className="flex items-center gap-1.5 text-xs text-slate-400 mt-4">
+        <input type="checkbox" checked={!!integration.blocksWorkflow} onChange={(e) => onChange({ blocksWorkflow: e.target.checked })} /> Blocks workflow
+      </label>
+    </div>
+  );
+}
+
+function Loader2Icon() {
+  return <svg className="animate-spin inline-block" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><circle cx="12" cy="12" r="10" strokeOpacity="0.25" /><path d="M22 12a10 10 0 0 0-10-10" /></svg>;
+}
+

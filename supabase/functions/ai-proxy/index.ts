@@ -34,9 +34,18 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "Invalid or expired session" }), { status: 401, headers: corsHeaders });
     }
 
-    const { prompt } = await req.json();
+    const { prompt, image } = await req.json();
     if (!prompt || typeof prompt !== "string") {
       return new Response(JSON.stringify({ error: "Missing 'prompt' string in request body" }), { status: 400, headers: corsHeaders });
+    }
+
+    // Base image content, keeping the existing plain-text callers unchanged.
+    let content = prompt;
+    if (image && image.base64 && image.mediaType) {
+      content = [
+        { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.base64 } },
+        { type: "text", text: prompt },
+      ];
     }
 
     const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
@@ -48,8 +57,8 @@ Deno.serve(async (req) => {
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
-        max_tokens: 1000,
-        messages: [{ role: "user", content: prompt }],
+        max_tokens: 8000,
+        messages: [{ role: "user", content }],
       }),
     });
 

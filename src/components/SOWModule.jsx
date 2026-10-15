@@ -1,8 +1,15 @@
 import React, { useState } from "react";
-import { ChevronDown, ChevronRight, Download, Trash2, Plus, X } from "lucide-react";
-import { Field, AIButton, inputCls, download } from "./ui";
-import { sowsTable } from "../lib/storage";
+import { ChevronDown, ChevronRight, Download, Trash2, Plus, X, Rocket, Upload, Loader2 } from "lucide-react";
+import { Field, AIButton, Modal, inputCls, download } from "./ui";
+import { sowsTable, projectsTable } from "../lib/storage";
 import { callClaude } from "../lib/ai";
+import { extractFile } from "../lib/fileExtract";
+
+const STATUS_COLOR = {
+  Draft: "text-slate-400 border-slate-600",
+  Approved: "text-emerald-400 border-emerald-500/40",
+  Rejected: "text-rose-400 border-rose-500/40",
+};
 
 const OUT_OF_SCOPE_DEFAULTS = [
   "Requirements in any RFP, online vendor portal terms, or similar document not expressly set forth in this SOW.",
@@ -17,11 +24,31 @@ function lineTotal(line, roles) {
   return (Number(line.hours) || 0) * rate;
 }
 
-export default function SOWModule({ projects, sows, setSows, roles, settings }) {
+export default function SOWModule({ projects, sows, setSows, roles, settings, onProjectCreated }) {
   const [form, setForm] = useState({ projectId: "", vertical: "", useCaseType: "", complexity: "Medium", mode: "T&M", pasteContext: "" });
   const [generating, setGenerating] = useState(false);
   const [draft, setDraft] = useState(null);
   const [expanded, setExpanded] = useState(null);
+  const [projectModalSow, setProjectModalSow] = useState(null);
+  const [extracting, setExtracting] = useState(false);
+  const [extractNote, setExtractNote] = useState("");
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-uploading the same filename later
+    if (!file) return;
+    setExtracting(true);
+    setExtractNote("");
+    try {
+      const { text, truncated, sourceType } = await extractFile(file);
+      setForm((f) => ({ ...f, pasteContext: f.pasteContext ? `${f.pasteContext}\n\n--- ${file.name} ---\n${text}` : text }));
+      setExtractNote(`Added "${file.name}" (${sourceType})${truncated ? " — truncated, it was long" : ""}.`);
+    } catch (err) {
+      alert("Couldn't read that file: " + err.message);
+    } finally {
+      setExtracting(false);
+    }
+  };
 
   const vendor = settings.vendor_name || "Vendor";
   const product = settings.product_name || "Product";
@@ -76,11 +103,18 @@ Base the resource line hours on realistic effort for the complexity level. Do no
         mode: form.mode, totalHours: totalHours(draft), totalWeeks: draft.termWeeks,
         phases: draft.resourceLines, assumptions: draft.assumptions, narrative: draft.narrative,
         objectives: draft.objectives, inScope: draft.inScope, outOfScope: draft.outOfScope,
-        customerResponsibilities: draft.customerResponsibilities,
+        customerResponsibilities: draft.customerResponsibilities, status: "Draft",
       });
       setSows([...sows, created]);
       setDraft(null);
     } catch (e) { alert("Save failed: " + e.message); }
+  };
+
+  const setStatus = async (sow, status) => {
+    try {
+      const updated = await sowsTable.update(sow.id, { ...sow, status });
+      setSows(sows.map((s) => (s.id === sow.id ? updated : s)));
+    } catch (e) { alert("Status update failed: " + e.message); }
   };
 
   const exportSow = (s) => {
@@ -128,7 +162,17 @@ ${(s.phases || []).map((l) => `- **${l.role}** — ${l.hours} hrs`).join("\n")}
           <Field label="Use case type"><input className={inputCls} placeholder="e.g. Price optimization rollout" value={form.useCaseType} onChange={(e) => setForm({ ...form, useCaseType: e.target.value })} /></Field>
           <Field label="Fee mode"><select className={inputCls} value={form.mode} onChange={(e) => setForm({ ...form, mode: e.target.value })}><option value="T&M">Time &amp; Materials</option><option value="Fixed Fee">Fixed Fee</option></select></Field>
         </div>
-        <Field label="Paste scope notes / prior SOW excerpt (optional context)"><textarea className={inputCls} rows={3} value={form.pasteContext} onChange={(e) => setForm({ ...form, pasteContext: e.target.value })} /></Field>
+        <Field label="Paste scope notes / prior SOW excerpt (optional context)">
+          <textarea className={inputCls} rows={3} value={form.pasteContext} onChange={(e) => setForm({ ...form, pasteContext: e.target.value })} />
+        </Field>
+        <div className="flex items-center gap-3 mb-4 -mt-2">
+          <label className="inline-flex items-center gap-1.5 text-xs text-teal-300 hover:text-teal-200 cursor-pointer border border-teal-500/30 rounded-md px-3 py-1.5 bg-teal-500/10">
+            {extracting ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
+            {extracting ? "Reading..." : "Upload discovery doc (PDF, DOCX, XLSX, image)"}
+            <input type="file" accept=".pdf,.docx,.xlsx,image/*" className="hidden" disabled={extracting} onChange={handleFileUpload} />
+          </label>
+          {extractNote && <span className="text-xs text-slate-500">{extractNote}</span>}
+        </div>
         <AIButton onClick={generate} busy={generating} label="Generate SOW draft" />
       </div>
 
@@ -176,16 +220,32 @@ ${(s.phases || []).map((l) => `- **${l.role}** — ${l.hours} hrs`).join("\n")}
           return (
             <div key={s.id} className="border border-slate-800 rounded-lg bg-slate-900/50">
               <button onClick={() => setExpanded(expanded === s.id ? null : s.id)} className="w-full flex items-center justify-between px-4 py-3 text-left">
-                <div><span className="text-sm text-slate-100 font-medium">{s.vertical} — {s.useCaseType}</span><span className="text-xs text-slate-500 ml-2 font-mono">${cost.toLocaleString()} / {s.complexity}</span></div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-slate-100 font-medium">{s.vertical} — {s.useCaseType}</span>
+                  <span className="text-xs text-slate-500 font-mono">${cost.toLocaleString()} / {s.complexity}</span>
+                  <span className={`text-[10px] px-1.5 rounded border ${STATUS_COLOR[s.status] || STATUS_COLOR.Draft}`}>{s.status || "Draft"}</span>
+                  {s.linkedProjectId && <span className="text-[10px] px-1.5 rounded border text-teal-400 border-teal-500/40">Project started</span>}
+                </div>
                 {expanded === s.id ? <ChevronDown size={16} className="text-slate-500" /> : <ChevronRight size={16} className="text-slate-500" />}
               </button>
               {expanded === s.id && (
                 <div className="px-4 pb-4">
                   <p className="text-sm text-slate-300 mb-2">{s.narrative}</p>
                   {(s.phases || []).map((l, i) => (<div key={i} className="flex justify-between text-xs font-mono text-slate-400 border-t border-slate-800 pt-1.5"><span className="text-slate-200">{l.role}</span><span>{l.hours}hr</span></div>))}
-                  <div className="flex gap-3 mt-3">
+                  <div className="flex items-center gap-2 mt-3">
+                    <span className="text-xs text-slate-500">Status:</span>
+                    <select className={inputCls + " max-w-[140px]"} value={s.status || "Draft"} onChange={(e) => setStatus(s, e.target.value)}>
+                      {["Draft", "Approved", "Rejected"].map((st) => <option key={st}>{st}</option>)}
+                    </select>
+                  </div>
+                  <div className="flex gap-3 mt-3 items-center flex-wrap">
                     <button onClick={() => exportSow(s)} className="inline-flex items-center gap-1 text-xs text-teal-400 hover:text-teal-300"><Download size={13} /> Export .md</button>
                     <button onClick={() => removeSow(s.id)} className="inline-flex items-center gap-1 text-xs text-rose-400 hover:text-rose-300"><Trash2 size={13} /> Delete</button>
+                    {s.status === "Approved" ? (
+                      <button onClick={() => setProjectModalSow(s)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-teal-500 text-slate-950 hover:bg-teal-400 ml-auto"><Rocket size={13} /> Create project from this SOW</button>
+                    ) : (
+                      <span className="text-xs text-slate-600 ml-auto">Approve this SOW to create a project from it</span>
+                    )}
                   </div>
                 </div>
               )}
@@ -193,7 +253,46 @@ ${(s.phases || []).map((l) => `- **${l.role}** — ${l.hours} hrs`).join("\n")}
           );
         })}
       </div>
+
+      {projectModalSow && (
+        <CreateProjectFromSow sow={projectModalSow} onClose={() => setProjectModalSow(null)}
+          onCreated={(project) => { onProjectCreated && onProjectCreated(project.id); setProjectModalSow(null); }} />
+      )}
     </div>
+  );
+}
+
+function CreateProjectFromSow({ sow, onClose, onCreated }) {
+  const [form, setForm] = useState({ name: `${sow.vertical} — ${sow.useCaseType}`, account: "", owner: "", startDate: "" });
+  const [saving, setSaving] = useState(false);
+
+  const create = async () => {
+    if (!form.name.trim() || !form.startDate) { alert("Project name and start date are required."); return; }
+    setSaving(true);
+    try {
+      const start = new Date(form.startDate);
+      const target = new Date(start);
+      target.setDate(target.getDate() + (Number(sow.totalWeeks) || 0) * 7);
+      const project = await projectsTable.create({
+        name: form.name, account: form.account, vertical: sow.vertical, owner: form.owner,
+        health: "Green", stage: "Discovery", startDate: form.startDate,
+        targetDate: target.toISOString().slice(0, 10),
+        notes: sow.narrative, sowId: sow.id,
+      });
+      onCreated(project);
+    } catch (e) { alert("Failed to create project: " + e.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Modal title={`Create project from "${sow.vertical} / ${sow.useCaseType}"`} onClose={onClose}>
+      <p className="text-xs text-slate-500 mb-3">The project inherits vertical and estimated duration from this SOW. Fill in what the SOW doesn't capture.</p>
+      <Field label="Project name"><input className={inputCls} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+      <Field label="Account"><input className={inputCls} value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })} /></Field>
+      <Field label="Owner"><input className={inputCls} value={form.owner} onChange={(e) => setForm({ ...form, owner: e.target.value })} /></Field>
+      <Field label="Start date (target date computed from SOW's estimated weeks)"><input type="date" className={inputCls} value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} /></Field>
+      <button onClick={create} disabled={saving} className="px-3 py-1.5 rounded-md text-xs font-medium bg-teal-500 text-slate-950 hover:bg-teal-400 inline-flex items-center gap-1.5 disabled:opacity-50"><Rocket size={14} /> {saving ? "Creating..." : "Create project"}</button>
+    </Modal>
   );
 }
 
