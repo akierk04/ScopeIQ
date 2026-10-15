@@ -90,7 +90,7 @@ export default function App() {
       <div className="border-b border-slate-800 px-6 py-4">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
-            <h1 className="text-lg font-semibold tracking-tight">{settings.product_name || "PMO Console"}</h1>
+            <h1 className="text-lg font-semibold tracking-tight">{settings.product_name || "ScopeIQ"}</h1>
             <p className="text-xs text-slate-500 font-mono">{settings.vendor_name ? `${settings.vendor_name} · ` : ""}Projects are the hub — everything else hangs off them</p>
           </div>
           <div className="flex items-center gap-4 text-xs font-mono">

@@ -44,7 +44,7 @@ export default function Login() {
   return (
     <div className="min-h-screen bg-slate-950 flex items-center justify-center px-4">
       <form onSubmit={mode === "signin" ? signIn : register} className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-lg p-6">
-        <h1 className="text-lg font-semibold text-slate-100 mb-1">PMO Console</h1>
+        <h1 className="text-lg font-semibold text-slate-100 mb-1">ScopeIQ</h1>
         <p className="text-xs text-slate-500 mb-5 font-mono">{mode === "signin" ? "Sign in to continue" : "Create an account"}</p>
 
         <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} className={inputCls} />
