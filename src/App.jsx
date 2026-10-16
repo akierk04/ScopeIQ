@@ -17,6 +17,7 @@ import SettingsModal from "./components/Settings";
 import SDDModule from "./components/SDDModule";
 import DataSpecification from "./components/DataSpecification";
 import DataModel from "./components/DataModel";
+import GettingStarted from "./components/GettingStarted";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -127,6 +128,9 @@ export default function App() {
           )}
         </nav>
         <main className="flex-1 p-6 min-w-0">
+          {tab === "dashboard" && (
+            <GettingStarted settings={settings} projects={projects} onNavigate={(t) => { setTab(t); setOpenProjectId(null); }} onOpenSettings={() => setSettingsOpen(true)} onOpenProject={openProject} />
+          )}
           {tab === "dashboard" && (
             <Dashboard projects={projects} milestones={milestones} dependencies={dependencies} risks={risks} changeRequests={changeRequests} onOpenProject={openProject} />
           )}
